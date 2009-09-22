@@ -47,7 +47,6 @@ for detailed view of each issue, please consult http://issues.apache.org/jira/br
 	Matthias Kilian
 	Alexey Kiselev
 	Gregory Kisling
-	Heschi Kreinick
 	Tat Leung
 	Costin Leau
 	Antoine Levy-Lambert
@@ -84,21 +83,16 @@ for detailed view of each issue, please consult http://issues.apache.org/jira/br
 	James P. White
 	Tom Widmer
 	John Williams
-  Chris Wood
+    Chris Wood
 	Patrick Woodworth
 	Jaroslaw Wypychowski
 	Aleksey Zhukov
 	
-   trunk
+   2.1.0
 =====================================
-- FIX: URLResource does not properly support authentication (IVY-1106) (thanks to Heschi Kreinick)
-- FIX: Excessive hits to missing URLs uses up all ports on Windows (IVY-1105)
-- FIX: ivy parse exception when using <publications defaultconf> (IVY-1102)
-- FIX: Change org.apache to commons-cli at jdbc-example (IVY-1109)
-- FIX: Fixed name snapshots are not updated even if they are marked as changing and the publication date is changed in repo (IVY-938)
-
-- IMPROVEMENT: Trace a message when a property file referenced from the settings doesn't exixts (IVY-1074)
-
+- DOCUMENTATION: little improvement of the documentations of the ivy:buildlist and ivy:resolve Ant tasks.
+- FIX: Credentials were not set properly for URLs that require authentication when using HttpClient.
+	
    2.1.0-rc2
 =====================================
 - DOCUMENTATION: not all attributes of publish task are documented (IVY-963) (thanks to Jon Schneider)

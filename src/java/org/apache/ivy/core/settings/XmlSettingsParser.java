@@ -51,8 +51,8 @@ import org.apache.ivy.util.url.CredentialsStore;
 import org.apache.ivy.util.url.URLHandler;
 import org.apache.ivy.util.url.URLHandlerRegistry;
 import org.xml.sax.Attributes;
-import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+import org.xml.sax.InputSource;
 import org.xml.sax.helpers.DefaultHandler;
 
 /**
@@ -472,7 +472,7 @@ public class XmlSettingsParser extends DefaultHandler {
                 URL fileUrl = urlFromFileAttribute(propFilePath);
                 ivy.loadProperties(fileUrl, override);
             } catch (FileNotFoundException e) {
-                Message.verbose("Unable to find property file: " + propFilePath);
+                // ignore...
             }
         } else if (environmentPrefix != null) {
             ivy.getVariableContainer().setEnvironmentPrefix(environmentPrefix);
