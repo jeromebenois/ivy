@@ -31,6 +31,7 @@ import javax.xml.parsers.ParserConfigurationException;
 
 import org.apache.ivy.Ivy;
 import org.apache.ivy.core.IvyContext;
+import org.apache.ivy.core.cache.ResolutionCacheManager;
 import org.apache.ivy.core.module.descriptor.Configuration;
 import org.apache.ivy.core.module.descriptor.ConfigurationAware;
 import org.apache.ivy.core.module.descriptor.DefaultArtifact;
@@ -40,6 +41,7 @@ import org.apache.ivy.core.module.descriptor.DefaultExcludeRule;
 import org.apache.ivy.core.module.descriptor.DefaultIncludeRule;
 import org.apache.ivy.core.module.descriptor.DefaultModuleDescriptor;
 import org.apache.ivy.core.module.descriptor.DependencyArtifactDescriptor;
+import org.apache.ivy.core.module.descriptor.DependencyDescriptor;
 import org.apache.ivy.core.module.descriptor.ExcludeRule;
 import org.apache.ivy.core.module.descriptor.IncludeRule;
 import org.apache.ivy.core.module.descriptor.License;
@@ -49,15 +51,21 @@ import org.apache.ivy.core.module.descriptor.OverrideDependencyDescriptorMediato
 import org.apache.ivy.core.module.id.ArtifactId;
 import org.apache.ivy.core.module.id.ModuleId;
 import org.apache.ivy.core.module.id.ModuleRevisionId;
+import org.apache.ivy.core.resolve.ResolveData;
+import org.apache.ivy.core.resolve.ResolveEngine;
+import org.apache.ivy.core.resolve.ResolveOptions;
+import org.apache.ivy.core.resolve.ResolvedModuleRevision;
 import org.apache.ivy.plugins.conflict.ConflictManager;
 import org.apache.ivy.plugins.conflict.FixedConflictManager;
 import org.apache.ivy.plugins.matcher.PatternMatcher;
 import org.apache.ivy.plugins.namespace.Namespace;
 import org.apache.ivy.plugins.parser.AbstractModuleDescriptorParser;
 import org.apache.ivy.plugins.parser.ModuleDescriptorParser;
+import org.apache.ivy.plugins.parser.ModuleDescriptorParserRegistry;
 import org.apache.ivy.plugins.parser.ParserSettings;
 import org.apache.ivy.plugins.repository.Resource;
 import org.apache.ivy.plugins.repository.url.URLResource;
+import org.apache.ivy.plugins.resolver.DependencyResolver;
 import org.apache.ivy.util.Message;
 import org.apache.ivy.util.XMLHelper;
 import org.apache.ivy.util.extendable.ExtendableItemHelper;
@@ -269,13 +277,15 @@ public class XmlModuleDescriptorParser extends AbstractModuleDescriptorParser {
                 throws SAXException {
             try {
                 if (state == State.DESCRIPTION) {
-                    //make sure we don't interpret any tag while in description tag 
+                    // make sure we don't interpret any tag while in description tag
                     buffer.append("<" + qName + ">");
                     return;
                 } else if ("ivy-module".equals(qName)) {
                     ivyModuleStarted(attributes);
                 } else if ("info".equals(qName)) {
                     infoStarted(attributes);
+                } else if (state == State.INFO && "extends".equals(qName)) {
+                    extendsStarted(attributes);
                 } else if (state == State.INFO && "license".equals(qName)) {
                     getMd().addLicense(new License(settings.substitute(attributes.getValue("name")),
                                         settings.substitute(attributes.getValue("url"))));
@@ -339,6 +349,200 @@ public class XmlModuleDescriptorParser extends AbstractModuleDescriptorParser {
                 sax.initCause(ex);
                 throw sax;
             }
+        }
+
+        protected String getDefaultParentLocation() {
+            return "../ivy.xml";
+        }
+
+        protected void extendsStarted(Attributes attributes) throws ParseException {
+            String parentOrganisation = attributes.getValue("organisation");
+            String parentModule = attributes.getValue("module");
+            String parentRevision = attributes.getValue("revision");
+            String location = attributes.getValue("location") != null ? attributes
+                    .getValue("location") : getDefaultParentLocation();
+            ModuleDescriptor parent = null;
+
+            String extendType = attributes.getValue("extendType") != null ? attributes.getValue(
+                "extendType").toLowerCase() : "all";
+
+            List/* <String> */extendTypes = Arrays.asList(extendType.split(","));
+
+            try {
+                Message.debug("Trying to parse included ivy file :" + location);
+                parent = parseOtherIvyFileOnFileSystem(location);
+
+                //verify that the parsed descriptor is the correct parent module.
+                ModuleId expected = new ModuleId(parentOrganisation, parentModule);
+                ModuleId pid = parent.getModuleRevisionId().getModuleId();
+                if (!expected.equals(pid)) {
+                    Message.verbose("Ignoring parent Ivy file " + location + "; expected "
+                        + expected + " but found " + pid);
+                    parent = null;
+                }
+                
+            } catch (ParseException e) {
+                Message.warn("Unable to parse included ivy file " + location + ": " 
+                    + e.getMessage());
+            } catch (IOException e) {
+                Message.warn("Unable to parse included ivy file " + location + ": " 
+                    + e.getMessage());
+            }
+
+            // if the included ivy file is not found on file system, tries to resolve using
+            // repositories
+            if (parent == null) {
+                try {
+                    Message.debug(
+                        "Trying to parse included ivy file by asking repository for module :"
+                                    + parentOrganisation
+                                    + "#"
+                                    + parentModule
+                                    + ";"
+                                    + parentRevision);
+                    parent = parseOtherIvyFile(parentOrganisation, parentModule, parentRevision);
+                } catch (ParseException e) {
+                    Message.warn("Unable to parse included ivy file for " + parentOrganisation
+                            + "#" + parentModule + ";" + parentRevision);
+                }
+            }
+
+            if (parent == null) {
+                throw new ParseException("Unable to parse included ivy file for "
+                        + parentOrganisation + "#" + parentModule + ";" + parentRevision, 0);
+            }
+
+            ResolutionCacheManager cacheManager = settings.getResolutionCacheManager();
+
+            File ivyFileInCache = cacheManager.getResolvedIvyFileInCache(parent
+                    .getResolvedModuleRevisionId());
+            //Generate the parent cache file if necessary
+            if (parent.getResource() != null
+                    && !parent.getResource().getName().equals(ivyFileInCache.toURI().toString())) {
+                try {
+                    parent.toIvyFile(ivyFileInCache);
+                } catch (ParseException e) {
+                    throw new ParseException("Unable to create cache file for "
+                            + parentOrganisation + "#" + parentModule + ";" + parentRevision
+                            + " Reason:" + e.getLocalizedMessage(), 0);
+                } catch (IOException e) {
+                    throw new ParseException("Unable to create cache file for "
+                            + parentOrganisation + "#" + parentModule + ";" + parentRevision
+                            + " Reason :" + e.getLocalizedMessage(), 0);
+                }
+            }
+            mergeWithOtherModuleDescriptor(extendTypes, parent);
+        }
+
+        protected void mergeWithOtherModuleDescriptor(List/* <String> */extendTypes,
+                ModuleDescriptor parent) {
+
+            if (extendTypes.contains("all")) {
+                mergeAll(parent);
+            } else {
+                if (extendTypes.contains("configurations")) {
+                    mergeConfigurations(parent.getConfigurations());
+                }
+
+                if (extendTypes.contains("dependencies")) {
+                    mergeDependencies(parent.getDependencies());
+                }
+
+                if (extendTypes.contains("description")) {
+                    mergeDescription(parent.getDescription());
+                }
+            }
+
+        }
+
+        protected void mergeAll(ModuleDescriptor parent) {
+            mergeConfigurations(parent.getConfigurations());
+            mergeDependencies(parent.getDependencies());
+            mergeDescription(parent.getDescription());
+        }
+
+        protected void mergeConfigurations(Configuration[] configurations) {
+            for (int i = 0; i < configurations.length; i++) {
+                Configuration configuration = configurations[i];
+                Message.debug("Merging configuration with: " + configuration.getName());
+                // TODO: Here we need to merge configuration
+                getMd().addConfiguration(configuration);
+            }
+        }
+
+        protected void mergeDependencies(DependencyDescriptor[] dependencies) {
+            for (int i = 0; i < dependencies.length; i++) {
+                DependencyDescriptor dependencyDescriptor = dependencies[i];
+                Message.debug("Merging dependency with: "
+                        + dependencyDescriptor.getDependencyRevisionId().toString());
+                // TODO: Here we need to merge dependencies
+                getMd().addDependency(dependencyDescriptor);
+            }
+        }
+
+        protected void mergeDescription(String description) {
+            String current = getMd().getDescription();
+            if (current == null || current.trim().length() == 0) {
+                getMd().setDescription(description);
+            }
+        }
+
+        protected ModuleDescriptor parseOtherIvyFileOnFileSystem(String location)
+                throws ParseException, IOException {
+            URL url = null;
+            ModuleDescriptor parent = null;
+            url = getSettings().getRelativeUrlResolver().getURL(descriptorURL, location);
+            Message.debug("Trying to load included ivy file from " + url.toString());
+            URLResource res = new URLResource(url);
+            ModuleDescriptorParser parser = ModuleDescriptorParserRegistry.getInstance().getParser(
+                res);
+
+            parent = parser.parseDescriptor(getSettings(), url, isValidate());
+            return parent;
+        }
+
+        protected ModuleDescriptor parseOtherIvyFile(String parentOrganisation,
+                String parentModule, String parentRevision) throws ParseException {
+            ModuleId parentModuleId = new ModuleId(parentOrganisation, parentModule);
+            ModuleRevisionId parentMrid = new ModuleRevisionId(parentModuleId, parentRevision);
+
+            // try to load parent module in cache
+            File cacheFile = settings.getResolutionCacheManager().getResolvedIvyFileInCache(
+                ModuleRevisionId.newInstance(parentMrid, Ivy.getWorkingRevision()));
+            if (cacheFile.exists() && cacheFile.length() > 0) {
+                ModuleDescriptor md;
+                try {
+                    Message.debug("Trying to load included ivy file from cache");
+                    URL parentUrl = cacheFile.toURI().toURL();
+                    md = parseOtherIvyFileOnFileSystem(parentUrl.toString());
+                    return md;
+                } catch (IOException e) {
+                    // do nothing
+                    Message.error(e.getLocalizedMessage());
+                }
+            }
+
+            DependencyDescriptor dd = new DefaultDependencyDescriptor(parentMrid, true);
+            ResolveData data = IvyContext.getContext().getResolveData();
+            if (data == null) {
+                ResolveEngine engine = IvyContext.getContext().getIvy().getResolveEngine();
+                ResolveOptions options = new ResolveOptions();
+                options.setDownload(false);
+                data = new ResolveData(engine, options);
+            }
+
+            DependencyResolver resolver = getSettings().getResolver(parentMrid);
+            if (resolver == null) {
+                // TODO: Throw exception here?
+                return null;
+            } else {
+                ResolvedModuleRevision otherModule = resolver.getDependency(dd, data);
+                if (otherModule == null) {
+                    throw new ParseException("Unable to find " + parentMrid.toString(), 0);
+                }
+                return otherModule.getDescriptor();
+            }
+
         }
 
         protected void publicationsStarted(Attributes attributes) {
